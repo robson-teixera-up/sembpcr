@@ -122,7 +122,7 @@ def idle():
 
 
 def validate(val_code):
-    '''Ask the server if a client's validation code matches our service,number pair'''
+    '''Ask the server if a client's validation code matches our service,number pair, and begin servicing if yes'''
     ENDPT = 'validate'
 
     if state != CS.WAITING:
