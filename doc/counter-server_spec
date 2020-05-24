@@ -1,0 +1,81 @@
+Estados do guiché:
+
+(a) UNREGISTERED    -> (b) IDLE     -> (c) WAITING  -> (b) / (d) SERVICING    -> (c) / (b)
+
+
+
+Todos os endpoints poderão, claro, devolver 500 ou 400 se aplicável, mesmo que não seja definido explicitamente no retorno 
+(e.g. 400 é sempre devolvido caso um endpoint requira que o guiché esteja num estado em que não está).
+
+As marcaçṍes @X antes da definição do endpoint indicam os estados válidos para um guiché que efetua tal pedido.
+
+Uma sessão (estado !UNREGISTERED) consiste num token emitido pelo servidor que o guiché incluirá nos seus pedidos no header Authorization.
+
+DEBATÍVEL: Por cima disto, julgo que deve ser implementada uma PSK que é necessária para que o servidor responda a qualquer pedido, mesmo um que não 
+requer autenticação -- isto porque pode não ser desejável que o endereço do servidor seja conhecido e que qualquer dispositivo possa fazer 
+um pedido PUT register. No entanto, poderemos querer expor GET services a um dispositivo do cliente.
+
+O guiché tratará erros 5xx e timeouts da mesma forma: repetindo o pedido até n vezes (n possivelmente igual a 3).
+O tratamento de erros 4xx será definido caso a caso.
+
+Todos os pedidos/respostas terão corpo nulo ou JSON.
+Parâmetros/grupos de parâmetros ou valores de retorno entre parênteses são opcionais.
+
+
+
+@UNREGISTERED
+PUT register({[s1, s2, ...]}) -> {200{token: TOKEN}, 409}:
+
+    Pede ao servidor para iniciar uma sessão. 
+    O guiché indica que poderá atender a pedidos para os serviços s1, s2, ... .
+    
+    409 significa que o servidor, por alguma razão, não pretende que o guiché se registe ou se registe com tais serviços.
+
+
+GET services() -> {200{[s1, s2, ...]}}:
+
+    Pede ao servidor a lista de serviços (string) que o sistema oferece.
+
+
+@!UNREGISTERED
+PUT next({service: SERVICE, number: NUMBER}) -> {200{(service: SERVICE, number:NUMBER)}, 204, 409, 403}:
+
+    Pede ao servidor que seja atribuída uma nova senha ao guiché.
+    Caso o guiché esteja no estado SERVICING, tem a semântica adicional de declarar que o guiché terminou de prestar serviço ao cliente.
+   
+    204: Significa que o servidor não está pronto para atribuir nova senha ao guiché, e este deve entrar no estado IDLE.
+    
+    409: Significa que o guiché está no estado WAITING e o timeout/período de espera para o cliente ainda não terminou.
+    400: Emite 400 caso o guiché esteja no estado SERVICING ou WAITING e (SERVICE, NUMBER) não corresponde à senha atribuída ao guiché.
+
+
+@!UNREGISTERED
+PUT service({service: SERVICE, number: NUMBER, 
+    new_service: NEW_SERVICE, new_number: NEW_NUMBER, new_val_code: NEW_VAL_CODE) -> {200{(service: SERVICE, number:NUMBER)}, 409, 403}:
+    
+    Pede ao servidor que seja permitido ao guiché atender o cliente indicado por (NEW_SERVICE, NEW_NUMBER, NEW_VAL_CODE).
+    
+    409: Mesma semântica que PUT next()
+    403: O servidor indica ao guiché que não deve atender o cliente (e.g. porque o período de tolerância já passou).
+
+@!UNREGISTERED
+PUT idle() -> {200, 401}:
+
+    Pede ao servidor para entrar no estado IDLE.
+    
+    401: O servidor não deseja que o guiché entre no estado IDLE.
+
+@WAITING
+PUT validate({service: SERVICE, number:NUMBER, val_code: VAL_CODE}) -> {200{valid: VALID}, 403}:
+
+    Pede ao servidor que valide o código de autenticação dum cliente.
+    VALID será true ou false consoante o resultado. Caso VALID seja true, o guiché deve entrar no estado SERVICING.
+    
+    403: O servidor indica ao guiché que não deve atender o cliente (e.g. porque o período de tolerância já passou).
+    400: Emite 400 caso (SERVICE, NUMBER) não corresponde à senha atribuída ao guiché.
+
+
+@!UNREGISTERED
+GET state() -> {200{state: STATE, (service: SERVICE, number: NUMBER)}}:
+
+    Devolve o estado atual dum guiché, tal como o servidor o conhece.
