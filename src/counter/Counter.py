@@ -38,6 +38,17 @@ KNOWN_SERVICES = None
 
 
 ######################
+##  Low level I/O   ##
+######################
+
+def signal(color, timesec):
+    if color not in ["red", "green"]:
+        raise ValueError("Can only signal red or green LEDs")
+    pass
+
+
+
+######################
 ## Request wrappers ##
 ######################
 
