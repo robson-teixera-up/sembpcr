@@ -1,5 +1,5 @@
 from enum import Enum, auto
-import requests as re
+import requests
 from time import sleep
 
 from requests.exceptions import HTTPError
@@ -28,6 +28,7 @@ class CS(Enum):
     SERVICING       = "SERVICING"
 
 
+RE = None
 STATE = CS.UNREGISTERED
 TOKEN = None
 SERVICE = None
@@ -42,17 +43,21 @@ KNOWN_SERVICES = None
 
 def register(services=None):
     '''Register a counter into the server DB'''
-    global STATE, TOKEN
+    global STATE, TOKEN, RE
     ENDPT = 'register'
 
     if STATE != CS.UNREGISTERED:
         raise StateException()
 
-    req = re.put(u(ENDPT), json={'services': services})
+    if RE is not None:
+        logger.warn("Will register, but session object is already initialized")
+
+    RE = requests.Session()
+
+    req = RE.put(u(ENDPT), json={'services': services})
     req.raise_for_status()
 
 
-    TOKEN = req.json()['token']
     STATE = CS.IDLE
 
     logger.info("Registered with services {}".format(services))
@@ -64,7 +69,7 @@ def services():
     global KNOWN_SERVICES
     ENDPT = 'services'
 
-    req = re.get(u(ENDPT))
+    req = RE.get(u(ENDPT))
     req.raise_for_status()
 
     KNOWN_SERVICES = req.json()
@@ -81,7 +86,7 @@ def next():
     if STATE == CS.UNREGISTERED:
         raise StateException()
 
-    req = re.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER})
+    req = RE.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER})
     req.raise_for_status()
 
     # Server wants us to idle
@@ -105,7 +110,7 @@ def service(new_service, new_number, new_val_code):
     if STATE == CS.UNREGISTERED:
         raise StateException()
 
-    req = re.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER, \
+    req = RE.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER, \
         'NEW_SERVICE': new_service, 'NEW_NUMBER': new_number, 'NEW_VAL_CODE': new_val_code})
     req.raise_for_status()
 
@@ -128,7 +133,7 @@ def idle():
     if STATE == CS.UNREGISTERED:
         raise StateException()
 
-    req = re.put(u(ENDPT))
+    req = RE.put(u(ENDPT))
     req.raise_for_status()
 
     logger.info("Successfully asked to idle")
@@ -143,7 +148,7 @@ def validate(val_code):
     if STATE != CS.WAITING:
         raise StateException()
 
-    req = re.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER, 'val_code': val_code})
+    req = RE.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER, 'val_code': val_code})
     req.raise_for_status()
 
     valid = req.json()['valid']
@@ -162,7 +167,7 @@ def askstate():
     if STATE == CS.UNREGISTERED:
         raise StateException()
 
-    req = re.get(u(ENDPT))
+    req = RE.get(u(ENDPT))
     req.raise_for_status()
 
     serv_state = req.json()
