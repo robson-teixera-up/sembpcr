@@ -20,9 +20,8 @@ class PutRegisterJsonInputs(Inputs):
 def put_next_valid_schema():
     return {'type': 'object',
             'properties': {
-                'service': {'type': 'string'},
-                'number': {'type': 'integer'},
-                'idle': {'type': 'boolean'}
+                'service': {'type': ['string', 'null']},
+                'number': {'type': ['integer', 'null']},
             },
             "required": ["service", "number"]}
 

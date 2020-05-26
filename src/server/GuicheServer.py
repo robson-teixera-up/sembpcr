@@ -33,8 +33,9 @@ TOKENS = {
 }
 
 SERVICES = ["service1", "service2"]
-SENHA = 0
-CUR_SERVICE = None
+SENHA = None
+CUR_SERVICES = None
+LAST_SERVICE = None
 COD_VALIDACAO = 102030
 TOLERANCIA = 3
 
@@ -68,7 +69,7 @@ def make_json_response(dict_obj, status):
 def put_register():
     global GUICHE_STATE
     global SERVICES
-    global CUR_SERVICE
+    global CUR_SERVICES
     global TOKENS
 
     logger.debug("Guiche state:" + GUICHE_STATE.value)
@@ -76,18 +77,19 @@ def put_register():
     if inputs.validate():
         if GUICHE_STATE == GuicheStates.UNREGISTERED:
             if len(request.json["services"]):
-                if request.json["services"][0] in SERVICES:
+                if not any(ser not in SERVICES for ser in request.json["services"]):
                     GUICHE_STATE = GuicheStates.IDLE
                     logger.debug("Guiche state:" + GUICHE_STATE.value)
-                    CUR_SERVICE = request.json["services"][0]
+                    CUR_SERVICES = request.json["services"]
                     return make_json_response({"token": TOKENS["secret-token-1"]}, 200)
                 else:
-                    logger.debug(request.json["services"][0] + "Serviço invalido")
+                    logger.debug(request.json["services"] + "Serviço invalido")
                     return make_json_response({"error": "Serviço invalido"}, 400)
             else:
                 return make_json_response({"error": "Deve se registar em pelo menos um serviço"}, 409)
         return make_json_response({"error": "Estado incorrecto"}, 400)
     else:
+        logger.debug("Validate error: {}".format(inputs.errors))
         return make_json_response({"error": "formato incorrecto"}, 400)
 
 
@@ -98,8 +100,6 @@ def get_services():
     global GUICHE_STATE
 
     logger.debug(GUICHE_STATE)
-    if GUICHE_STATE == GuicheStates.UNREGISTERED:
-        return make_json_response({"error": "Estado incorrecto"}, 400)
 
     return make_json_response({"services": SERVICES}, 200)
 
@@ -109,31 +109,34 @@ def get_services():
 def put_next():
     global GUICHE_STATE
     global SENHA
-    global CUR_SERVICE
+    global CUR_SERVICES
+    global LAST_SERVICE
 
     inputs = PutNextJsonInputs(request)
     if inputs.validate():
-        if request.json["service"] != CUR_SERVICE or request.json["number"] != SENHA:
+        if request.json["service"] != LAST_SERVICE or request.json["number"] != SENHA:
+            logger.debug("{}, {}, {}, {}".format(request.json["service"], CUR_SERVICES, request.json["number"], SENHA))
             return make_json_response({"error": "Conjunto service/number invalido"}, 400)
 
         if GUICHE_STATE == GuicheStates.SERVICING:
-            if "idle" in request.json.keys() and request.json["idle"] is True:
-                GUICHE_STATE = GuicheStates.IDLE
-                return make_json_response({"service": CUR_SERVICE}, 200)
-            else:
-                GUICHE_STATE = GuicheStates.WAITING
-                SENHA += 1
-                return make_json_response({"service": CUR_SERVICE, "number": SENHA}, 200)
+            GUICHE_STATE = GuicheStates.WAITING
+            if SENHA is None: SENHA = 0
+            SENHA += 1
+            LAST_SERVICE = CUR_SERVICES[0]
+            return make_json_response({"service": CUR_SERVICES[0], "number": SENHA}, 200)
 
         elif GUICHE_STATE == GuicheStates.IDLE:
             GUICHE_STATE = GuicheStates.WAITING
+            if SENHA is None: SENHA = 0
             SENHA += 1
-            return make_json_response({"service": CUR_SERVICE, "number": SENHA}, 200)
+            LAST_SERVICE = CUR_SERVICES[0]
+            return make_json_response({"service": CUR_SERVICES[0], "number": SENHA}, 200)
 
         else:
             return make_json_response({"error": "Estado incorrecto"}, 400)
 
     else:
+        logger.debug("Validate error: {}".format(inputs.errors))
         return make_json_response({"error": "formato incorrecto"}, 400)
 
 
@@ -145,11 +148,12 @@ def put_service():
     global COD_VALIDACAO
     global SERVICES
     global TOLERANCIA
-    global CUR_SERVICE
+    global CUR_SERVICES
+    global LAST_SERVICE
 
     inputs = PutServiceJsonInputs(request)
     if inputs.validate():
-        if request.json["service"] != CUR_SERVICE or request.json["number"] != SENHA:
+        if request.json["service"] != LAST_SERVICE or request.json["number"] != SENHA:
             return make_json_response({"error": "Pedido invalido"}, 400)
         elif request.json["new_service"] not in SERVICES:
             return make_json_response({"error": "Serviço desconhecido"}, 400)
@@ -161,7 +165,7 @@ def put_service():
             return make_json_response({"valid": False}, 200)
         else:
             SENHA = request.json["new_number"]
-            CUR_SERVICE = request.json["new_service"]
+            LAST_SERVICE = request.json["new_service"]
             GUICHE_STATE = GuicheStates.SERVICING
             return make_json_response({"valid": True}, 200)
     else:
@@ -174,14 +178,15 @@ def put_validate():
     global GUICHE_STATE
     global SENHA
     global COD_VALIDACAO
-    global CUR_SERVICE
+    global CUR_SERVICES
+    global LAST_SERVICE
 
     inputs = PutValidateJsonInputs(request)
     if inputs.validate():
         if GUICHE_STATE != GuicheStates.WAITING:
             return make_json_response({"error": "Estado incorrecto"}, 400)
 
-        if request.json["service"] != CUR_SERVICE or request.json["number"] != SENHA:
+        if request.json["service"] != LAST_SERVICE or request.json["number"] != SENHA:
             return make_json_response({"error": "Informação incorrecta"}, 400)
 
         elif request.json["val_code"] != COD_VALIDACAO:
@@ -190,6 +195,7 @@ def put_validate():
             GUICHE_STATE = GuicheStates.SERVICING
             return make_json_response({"valid": True}, 200)
     else:
+        logger.debug("Validate error: {}".format(inputs.errors))
         return make_json_response({"error": "formato incorrecto"}, 400)
 
 
@@ -198,7 +204,7 @@ def put_validate():
 def get_state():
     global GUICHE_STATE
     global SENHA
-    global CUR_SERVICE
+    global CUR_SERVICES
 
     if GUICHE_STATE == GuicheStates.UNREGISTERED:
         return make_json_response({"state": GUICHE_STATE.value}, 200)
@@ -206,4 +212,4 @@ def get_state():
 
 
 if __name__ == '__main__':
-    GuicheApp.run(debug=True)
+    GuicheApp.run(debug=True, host="localhost", port=31231)

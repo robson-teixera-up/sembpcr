@@ -2,12 +2,14 @@ from enum import Enum, auto
 import requests as re
 from time import sleep
 
+from requests.exceptions import HTTPError
+from logzero import logger
+
 
 SLEEP_S = .1
 
 
-SERVER = "http://localhost:31231"
-
+SERVER = "http://localhost:31231/api/v1.0"
 def u(url):
     return SERVER + "/" + url
 
@@ -20,10 +22,10 @@ class StateException(Exception):
 
 
 class CS(Enum):
-    UNREGISTERED    = auto()
-    IDLE            = auto()
-    WAITING         = auto()
-    SERVICING       = auto()
+    UNREGISTERED    = "UNREGISTERED"
+    IDLE            = "IDLE"
+    WAITING         = "WAITING"
+    SERVICING       = "SERVICING"
 
 
 STATE = CS.UNREGISTERED
@@ -40,22 +42,26 @@ KNOWN_SERVICES = None
 
 def register(services=None):
     '''Register a counter into the server DB'''
+    global STATE, TOKEN
     ENDPT = 'register'
 
     if STATE != CS.UNREGISTERED:
         raise StateException()
 
-    req = re.put(u(ENDPT), json=services)
+    req = re.put(u(ENDPT), json={'services': services})
     req.raise_for_status()
 
 
     TOKEN = req.json()['token']
+    STATE = CS.IDLE
 
+    logger.info("Registered with services {}".format(services))
     return TOKEN
 
 
 def services():
     '''Ask the server for available services'''
+    global KNOWN_SERVICES
     ENDPT = 'services'
 
     req = re.get(u(ENDPT))
@@ -63,14 +69,16 @@ def services():
 
     KNOWN_SERVICES = req.json()
 
+    logger.info("Asked about services. Available services are: {}".format(KNOWN_SERVICES))
     return KNOWN_SERVICES
 
 
 def next():
     '''Ask the server to issue us another number'''
+    global STATE, SERVICE, NUMBER
     ENDPT = 'next'
 
-    if state == CS.UNREGISTERED:
+    if STATE == CS.UNREGISTERED:
         raise StateException()
 
     req = re.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER})
@@ -86,13 +94,15 @@ def next():
     NUMBER = resp['number']
     STATE = CS.WAITING
 
+    logger.info("Now waiting for ticket {} in service {}".format(NUMBER, SERVICE))
     return (SERVICE, NUMBER)
 
 def service(new_service, new_number, new_val_code):
     '''Ask the server to let us service a client who showed up out of order'''
+    global STATE, SERVICE, NUMBER
     ENDPT = 'service'
 
-    if state == CS.UNREGISTERED:
+    if STATE == CS.UNREGISTERED:
         raise StateException()
 
     req = re.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER, \
@@ -107,25 +117,30 @@ def service(new_service, new_number, new_val_code):
     NUMBER = new_number
     STATE = CS.SERVICING
 
+    logger.info("Now waiting for out-of-order ticket {} in service {}".format(NUMBER, SERVICE))
+
 
 def idle():
     '''Ask the server to let us idle'''
+    global STATE
     ENDPT = 'idle'
 
-    if state == CS.UNREGISTERED:
+    if STATE == CS.UNREGISTERED:
         raise StateException()
 
     req = re.put(u(ENDPT))
     req.raise_for_status()
 
+    logger.info("Successfully asked to idle")
     STATE = CS.IDLE
 
 
 def validate(val_code):
     '''Ask the server if a client's validation code matches our service,number pair, and begin servicing if yes'''
+    global STATE
     ENDPT = 'validate'
 
-    if state != CS.WAITING:
+    if STATE != CS.WAITING:
         raise StateException()
 
     req = re.put(u(ENDPT), json={'service': SERVICE, 'number': NUMBER, 'val_code': val_code})
@@ -133,22 +148,27 @@ def validate(val_code):
 
     valid = req.json()['valid']
     if not valid:
-        raise ValidateException('Invalid code {} for {}'.format(new_val_code, (new_service, new_number)))
+        raise ValidateException('Invalid code {} for {}'.format(val_code, (SERVICE, NUMBER)))
 
+    logger.info("Code {} validates for ticket {} in service {}".format(val_code, NUMBER, SERVICE))
     STATE = CS.SERVICING
 
 
-def state():
+def askstate():
     '''Ask the server what it thinks our state is'''
+    global state
     ENDPT = 'state'
 
-    if state == CS.UNREGISTERED:
+    if STATE == CS.UNREGISTERED:
         raise StateException()
 
     req = re.get(u(ENDPT))
     req.raise_for_status()
 
-    return req.json()
+    serv_state = req.json()
+
+    logger.info("Server thinks our state is {}".format(serv_state))
+    return serv_state
 
 
 
@@ -156,14 +176,47 @@ def state():
 ##    Main loop     ##
 ######################
 
+def handleInputKeyboard():
+    if STATE == CS.UNREGISTERED:
+        print("Register into service:")
+    elif STATE == CS.IDLE or STATE == CS.SERVICING:
+        print("Press enter to request next number.")
+    elif STATE == CS.WAITING:
+        print("Enter validation code:")
+
+    cmd = input()
+
+    try:
+        if STATE == CS.UNREGISTERED:
+            register(services=[cmd])
+        elif STATE == CS.IDLE:
+            next()
+        elif STATE == CS.WAITING:
+            validate(int(cmd))
+        elif STATE == CS.SERVICING:
+            next()
+    except HTTPError as e:
+        logger.error("HTTP Error: {}".format(e.response.json()))
+    except ValidateException as e:
+        logger.error(e)
+
+    logger.info("Now in state {}".format(STATE))
+
 def setup():
     register()
 
+handleInput = handleInputKeyboard
 def main():
-    #setup()
+    try:
+        register(services=["service1"])
+    except HTTPError as e:
+        logger.error("HTTP Error: {}".format(e.response.json()))
     while True:
-        #doStuff()
-        sleep(SLEEP_S)
+        try:
+            #doStuff()
+            sleep(SLEEP_S)
+        except KeyboardInterrupt:
+            handleInput()
     #finalize()
 
 if __name__ == '__main__':
