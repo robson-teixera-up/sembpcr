@@ -20,7 +20,7 @@ class PutRegisterJsonInputs(Inputs):
 def put_next_valid_schema():
     return {'type': 'object',
             'properties': {
-                'service': {'type': ['string', 'null']},
+                'service': {'type': ['integer', 'null']},
                 'number': {'type': ['integer', 'null']},
             },
             "required": ["service", "number"]}
@@ -33,9 +33,9 @@ class PutNextJsonInputs(Inputs):
 def put_service_valid_schema():
     return {'type': 'object',
             'properties': {
-                'service': {'type': 'string'},
+                'service': {'type': 'integer'},
                 'number': {'type': 'integer'},
-                'new_service': {'type': 'string'},
+                'new_service': {'type': 'integer'},
                 'new_number': {'type': 'integer'},
                 'new_val_code': {'type': 'integer'},
             },
@@ -49,7 +49,7 @@ class PutServiceJsonInputs(Inputs):
 def put_validate_valid_schema():
     return {'type': 'object',
             'properties': {
-                'service': {'type': 'string'},
+                'service': {'type': 'integer'},
                 'number': {'type': 'integer'},
                 'val_code': {'type': 'integer'}
             },
