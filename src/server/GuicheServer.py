@@ -8,6 +8,7 @@ from sqlalchemy import func
 from random import randint
 from uuid import uuid4
 from datetime import datetime
+import functools
 
 # TODO
 # Converter de flask para Quart
@@ -60,10 +61,12 @@ class Ticket(db.Model):
 
 
 db.create_all()
+
+
+
 ######################
 ##     DB manip     ##
 ######################
-
 
 def mk_ticket(service, cid, hid):
     '''Makes a new ticket.
@@ -146,40 +149,68 @@ class GuicheStates(str, Enum):
     SERVICING = "SERVICING"
 
 
+def check_state(states):
+    def decorator_check_state(func):
+        @functools.wraps(func)
+        def wrapper_check_state(*args, **kwargs):
+            if "state" not in session:
+                session["state"] = GuicheStates.UNREGISTERED
+
+            if states and session["state"] not in states:
+                return make_json_response({"error": "Invalid state {}; should be in {}"
+                    .format(session["state"], states)}, 400)
+
+            js = request.json
+            if js.get("service") != session.get("last_service") or js.get("number") != session.get("senha"):
+                return make_json_response({"error": "Bad service/number pair {}; should be {}"
+                    .format((js.get("services"), js.get("number")), (session.get("last_service"), session.get("senha")))}, 400)
+            return func(*args, **kwargs)
+        return wrapper_check_state
+    return decorator_check_state
+
+def validate_json(validator):
+    def decorator_validate_json(func):
+        @functools.wraps(func)
+        def wrapper_validate_json(*args, **kwargs):
+            inputs = validator(request)
+            if not inputs.validate():
+                err = "Validate error: {}".format(inputs.errors)
+                logger.debug(err)
+                return make_json_response({"error": err}, 400)
+
+            return func(*args, **kwargs)
+        return wrapper_validate_json
+    return decorator_validate_json
+
 @GuicheApp.errorhandler(404)
 def not_found(error):
     return make_response(jsonify({'error': 'Not found'}), 404)
 
 
 @GuicheApp.route('/api/v1.0/register', methods=['PUT'])
+@check_state([GuicheStates.UNREGISTERED])
+@validate_json(PutRegisterJsonInputs)
 def put_register():
     global SERVICES
 
-    logger.debug("Guiche has state: {}".format("state" in session))
-    inputs = PutRegisterJsonInputs(request)
-    if inputs.validate():
-        if "state" not in session:
-            if len(request.json["services"]):
-                if not any(ser not in SERVICES for ser in request.json["services"]):
-                    session["state"] = GuicheStates.IDLE
-                    logger.debug("Guiche state:" + session["state"].value)
-                    session["services"] = request.json["services"]
-                    session["senha"] = None
-                    session["last_service"] = None
-                    session["cid"] = uuid4()
-                    return make_json_response({"success": "success"}, 200)
-                else:
-                    logger.debug(request.json["services"] + "Serviço invalido")
-                    return make_json_response({"error": "Serviço invalido"}, 400)
-            else:
-                return make_json_response({"error": "Deve se registar em pelo menos um serviço"}, 409)
-        return make_json_response({"error": "Estado incorrecto"}, 400)
+    if len(request.json["services"]):
+        if not any(ser not in SERVICES for ser in request.json["services"]):
+            session["state"] = GuicheStates.IDLE
+            logger.debug("Guiche state:" + session["state"].value)
+            session["services"] = request.json["services"]
+            session["senha"] = None
+            session["last_service"] = None
+            session["cid"] = uuid4()
+            return make_json_response({"success": "success"}, 200)
+        else:
+            logger.debug(request.json["services"] + "Serviço invalido")
+            return make_json_response({"error": "Serviço invalido"}, 400)
     else:
-        logger.debug("Validate error: {}".format(inputs.errors))
-        return make_json_response({"error": "formato incorrecto"}, 400)
+        return make_json_response({"error": "Deve se registar em pelo menos um serviço"}, 409)
 
 
 @GuicheApp.route('/api/v1.0/services', methods=['GET'])
+@check_state(None)
 def get_services():
     global SERVICES
 
@@ -189,92 +220,64 @@ def get_services():
 
 
 @GuicheApp.route('/api/v1.0/next', methods=['PUT'])
+@validate_json(PutNextJsonInputs)
+@check_state([GuicheStates.SERVICING, GuicheStates.IDLE, GuicheStates.WAITING])
 def put_next():
 
-    inputs = PutNextJsonInputs(request)
-    if inputs.validate():
-        # Sanity check
-        if request.json["service"] != session["last_service"] or request.json["number"] != session["senha"]:
-            logger.debug("{}, {}, {}, {}".format(request.json["service"], session["services"], request.json["number"], session["senha"]))
-            return make_json_response({"error": "Conjunto service/number invalido"}, 400)
+    # Have we timed out yet?
+    if session["state"] == GuicheStates.WAITING:
+        delta = get_ticket_timedelta(session["last_service"], session["senha"])
+        if delta <= TIMEOUT_SEC:
+            return make_json_response({"error": "Ticket was issued {}s ago; cannot reissue for {}s"
+                    .format(delta, TIMEOUT_SEC-delta)}, 400)
 
-        if session["state"] == GuicheStates.SERVICING or session["state"] == GuicheStates.IDLE or session["state"] == GuicheStates.WAITING:
-
-            # Have we timed out yet?
-            if session["state"] == GuicheStates.WAITING:
-                delta = get_ticket_timedelta(session["last_service"], session["senha"])
-                if delta <= TIMEOUT_SEC:
-                    return make_json_response({"error": "Ticket was issued {}s ago; cannot reissue for {}s"
-                            .format(delta, TIMEOUT_SEC-delta)}, 400)
-
-            session["senha"], _ = mk_ticket(0, str(session['cid']), None)
-            call_ticket(0, session["senha"])
-            session["last_service"] = 0
-            session["state"] = GuicheStates.WAITING
-            return make_json_response({"service": 0, "number": session["senha"]}, 200)
-
-        # Bad State
-        else:
-            return make_json_response({"error": "Estado incorrecto"}, 400)
-
-    else:
-        logger.debug("Validate error: {}".format(inputs.errors))
-        return make_json_response({"error": "formato incorrecto"}, 400)
+    session["senha"], _ = mk_ticket(0, str(session['cid']), None)
+    call_ticket(0, session["senha"])
+    session["last_service"] = 0
+    session["state"] = GuicheStates.WAITING
+    return make_json_response({"service": 0, "number": session["senha"]}, 200)
 
 
 @GuicheApp.route('/api/v1.0/service', methods=['PUT'])
+@validate_json(PutServiceJsonInputs)
+@check_state([GuicheStates.SERVICING, GuicheStates.IDLE, GuicheStates.WAITING])
 def put_service():
     global COD_VALIDACAO
     global SERVICES
     global TOLERANCIA
 
-    inputs = PutServiceJsonInputs(request)
-    if inputs.validate():
-        if request.json["service"] != session["last_service"] or request.json["number"] != session["senha"]:
-            return make_json_response({"error": "Pedido invalido"}, 400)
-        elif request.json["new_service"] not in SERVICES:
-            return make_json_response({"error": "Serviço desconhecido"}, 400)
-        elif session["senha"] < request.json["new_number"]:
-            return make_json_response({"error": "new_number deve ser inferior à senha actual"}, 403)
-        elif session["senha"] - request.json["new_number"] > TOLERANCIA:
-            return make_json_response({"error": "tolerancia ultrapassada"}, 403)
-        elif request.json["new_val_code"] != COD_VALIDACAO:
-            return make_json_response({"valid": False}, 200)
-        else:
-            session["senha"] = request.json["new_number"]
-            session["last_service"] = request.json["new_service"]
-            session["state"] = GuicheStates.SERVICING
-            return make_json_response({"valid": True}, 200)
+    if request.json["new_service"] not in SERVICES:
+        return make_json_response({"error": "Serviço desconhecido"}, 400)
+    elif session["senha"] < request.json["new_number"]:
+        return make_json_response({"error": "new_number deve ser inferior à senha actual"}, 403)
+    elif session["senha"] - request.json["new_number"] > TOLERANCIA:
+        return make_json_response({"error": "tolerancia ultrapassada"}, 403)
+    elif request.json["new_val_code"] != COD_VALIDACAO:
+        return make_json_response({"valid": False}, 200)
     else:
-        return make_json_response({"error": "formato incorrecto"}, 400)
-
+        session["senha"] = request.json["new_number"]
+        session["last_service"] = request.json["new_service"]
+        session["state"] = GuicheStates.SERVICING
+        return make_json_response({"valid": True}, 200)
 
 @GuicheApp.route('/api/v1.0/validate', methods=['PUT'])
+@validate_json(PutValidateJsonInputs)
+@check_state([GuicheStates.WAITING])
 def put_validate():
     global COD_VALIDACAO
 
-    inputs = PutValidateJsonInputs(request)
-    if inputs.validate():
-        if session["state"] != GuicheStates.WAITING:
-            return make_json_response({"error": "Estado incorrecto"}, 400)
+    msg, code = val_ticket(request.json["service"], request.json["number"], session["cid"], request.json["val_code"])
 
-        if request.json["service"] != session["last_service"] or request.json["number"] != session["senha"]:
-            return make_json_response({"error": "Informação incorrecta"}, 400)
+    if code == 200 and msg["valid"]:
+        logger.debug("Ticket {} validates against {}"
+            .format((request.json["service"], request.json["number"]), request.json["val_code"]))
+        session["state"] = GuicheStates.SERVICING
 
-        msg, code = val_ticket(request.json["service"], request.json["number"], session["cid"], request.json["val_code"])
-
-        if code == 200 and msg["valid"]:
-            logger.debug("Ticket {} validates against {}"
-                .format((request.json["service"], request.json["number"]), request.json["val_code"]))
-            session["state"] = GuicheStates.SERVICING
-
-        return make_json_response(msg, code)
-    else:
-        logger.debug("Validate error: {}".format(inputs.errors))
-        return make_json_response({"error": "formato incorrecto"}, 400)
+    return make_json_response(msg, code)
 
 
 @GuicheApp.route('/api/v1.0/state', methods=['GET'])
+@check_state(None)
 def get_state():
     if session["state"] == GuicheStates.UNREGISTERED:
         return make_json_response({"state": session["state"].value}, 200)
